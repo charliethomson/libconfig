@@ -1,0 +1,29 @@
+[workspace]
+resolver='2'
+package.version='0.0.1'
+package.edition='2024'
+members = [ "libconfig" , "testing"]
+
+[workspace.dependencies]
+liberror = { git = "https://github.com/charliethomson/liberror" }
+libpath = { git = "https://github.com/charliethomson/libpath" }
+libproduct = { git = "https://github.com/charliethomson/libpath" }
+
+libconfig = { path = "./libconfig" }
+
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.143" }
+thiserror = { version = "2.0.16" }
+tokio-util = { version = "0.7.16" }
+toml = { version = "0.9.5" }
+tracing = { version = "0.1.41", features = ["valuable"] }
+valuable = { version = "0.1.1", features = ["derive"] }
+
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = 0 }
+missing_errors_doc = { level = "allow", priority = 1 }
+panic = { level = "warn", priority = 1 }
+
+# I really dont care, im not gonna use non-standard hashmaps
+implicit_hasher = { level = "allow", priority = 1 }

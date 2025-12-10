@@ -1,0 +1,16 @@
+[package]
+name = "libconfig"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+liberror.workspace = true
+libpath.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+valuable.workspace = true
+
+[lints]
+workspace = true

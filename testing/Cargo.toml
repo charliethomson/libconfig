@@ -1,0 +1,13 @@
+[package]
+name = "testing"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libconfig.workspace = true
+libproduct.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tokio = { version = "1.48.0", features = ["full"] }
+
+[lints]
+workspace = true
