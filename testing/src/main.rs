@@ -1,22 +1,30 @@
+use libconfig::{ConfigExt, config};
 use libproduct::product_name;
 use serde::{Deserialize, Serialize};
 
-product_name!("dev.thmsn.libconfig");
+product_name!(with base "dev.thmsn.libconfig" as PRODUCT_NAME);
 
-#[derive(Serialize, Deserialize, Default, Debug)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 struct SampleConfig {
     loads: usize,
+}
+config! {
+    pub static SAMPLE_CONFIG: SampleConfig = {
+        module: "sample",
+        env_prefix: "TESTING_",
+        impl_trait,
+    }
 }
 
 #[tokio::main]
 async fn main() {
     PRODUCT_NAME.set_global().unwrap();
+    let mut conf = SAMPLE_CONFIG.clone();
 
-    // Reads/writes to Application Support/dev.thmsn.libconfig/configs/testing.toml
-    let config = libconfig::merge_config("testing", |config: &mut SampleConfig| {
-        config.loads = config.loads.saturating_add(1);
-    })
-    .unwrap();
+    println!("Loaded as {:#?}", conf);
 
-    println!("{:#?}", config);
+    conf.loads += 1;
+    conf.store().unwrap();
+
+    println!("Stored as {:#?}", conf);
 }
