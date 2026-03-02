@@ -23,21 +23,31 @@ mod fs {
             inner_error: e.into(),
         })?;
 
+        // Write to a per-process temp file then atomically rename into place.
+        // This prevents concurrent writers from interleaving partial writes and
+        // corrupting the TOML (rename(2) is atomic on POSIX).
+        let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
-            .open(path)
+            .open(&tmp_path)
             .map_err(|e| ConfigError::Open {
-                path: path.to_path_buf().display().to_string(),
+                path: tmp_path.display().to_string(),
                 inner_error: e.into(),
             })?;
 
-        file.write(buffer.as_bytes())
-            .map_err(|e| ConfigError::Write {
-                path: path.to_path_buf().display().to_string(),
-                inner_error: e.into(),
-            })?;
+        file.write_all(buffer.as_bytes()).map_err(|e| ConfigError::Write {
+            path: tmp_path.display().to_string(),
+            inner_error: e.into(),
+        })?;
+
+        std::fs::rename(&tmp_path, path).map_err(|e| ConfigError::Write {
+            path: path.display().to_string(),
+            inner_error: e.into(),
+        })?;
+
         Ok(())
     }
 }
@@ -61,11 +71,23 @@ pub fn load<Config: Serialize + DeserializeOwned + Default>(
         figment = figment.merge(Env::prefixed(prefix));
     }
 
-    let config = figment
-        .extract::<Config>()
-        .map_err(|e| ConfigError::Parse {
-            inner_error: e.into(),
-        })?;
+    let config = match figment.extract::<Config>() {
+        Ok(c) => c,
+        Err(_) if path.exists() => {
+            // The file likely contains corrupted TOML (e.g. from a previous
+            // concurrent write). Delete it and fall back to defaults + env so
+            // future runs aren't permanently blocked.
+            let _ = std::fs::remove_file(&path);
+            let mut fallback = Figment::from(Serialized::defaults(Config::default()));
+            if let Some(prefix) = env_prefix {
+                fallback = fallback.merge(Env::prefixed(prefix));
+            }
+            fallback.extract::<Config>().map_err(|e| ConfigError::Parse {
+                inner_error: e.into(),
+            })?
+        }
+        Err(e) => return Err(ConfigError::Parse { inner_error: e.into() }),
+    };
 
     store_config(&path, &config)?;
 
