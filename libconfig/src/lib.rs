@@ -9,11 +9,17 @@ use libpath::config_path;
 use serde::{Serialize, de::DeserializeOwned};
 
 mod fs {
-    use std::{io::Write, path::Path};
+    use std::{
+        io::Write,
+        path::Path,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use serde::{Serialize, de::DeserializeOwned};
 
     use crate::ConfigError;
+
+    static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     pub(super) fn store_config<Config>(path: &Path, config: &Config) -> Result<(), ConfigError>
     where
@@ -23,10 +29,11 @@ mod fs {
             inner_error: e.into(),
         })?;
 
-        // Write to a per-process temp file then atomically rename into place.
-        // This prevents concurrent writers from interleaving partial writes and
-        // corrupting the TOML (rename(2) is atomic on POSIX).
-        let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+        // Write to a unique temp file then atomically rename into place.
+        // Using pid + per-call counter ensures uniqueness across both processes
+        // and threads within the same process. rename(2) is atomic on POSIX.
+        let seq = STORE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = path.with_extension(format!("tmp.{}.{}", std::process::id(), seq));
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
