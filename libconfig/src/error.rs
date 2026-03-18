@@ -20,4 +20,6 @@ pub enum ConfigError {
     Dump { inner_error: AnyError },
     #[error("Failed to write to config file at \"{path}\": {inner_error}")]
     Write { path: String, inner_error: AnyError },
+    #[error("Config file was modified externally since it was last loaded")]
+    Stale,
 }

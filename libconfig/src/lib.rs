@@ -7,12 +7,14 @@ use figment::{
 };
 use libpath::config_path;
 use serde::{Serialize, de::DeserializeOwned};
+use std::{path::PathBuf, time::SystemTime};
 
 mod fs {
     use std::{
         io::Write,
         path::Path,
         sync::atomic::{AtomicU64, Ordering},
+        time::SystemTime,
     };
 
     use serde::{Serialize, de::DeserializeOwned};
@@ -20,6 +22,24 @@ mod fs {
     use crate::ConfigError;
 
     static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn get_mtime(path: &Path) -> Option<SystemTime> {
+        std::fs::metadata(path).ok()?.modified().ok()
+    }
+
+    pub(super) fn store_config_checked<Config>(
+        path: &Path,
+        config: &Config,
+        expected_mtime: Option<SystemTime>,
+    ) -> Result<(), ConfigError>
+    where
+        Config: Serialize + DeserializeOwned + Default,
+    {
+        if get_mtime(path) != expected_mtime {
+            return Err(ConfigError::Stale);
+        }
+        store_config(path, config)
+    }
 
     pub(super) fn store_config<Config>(path: &Path, config: &Config) -> Result<(), ConfigError>
     where
@@ -111,6 +131,61 @@ pub fn store<Config: Serialize + DeserializeOwned + Default>(
     Ok(())
 }
 
+/// A loaded configuration value bundled with the file's modification time at load.
+///
+/// Use [`store_checked`](LoadedConfig::store_checked) to write back the config only if the file
+/// has not been modified externally since it was loaded. Returns [`ConfigError::Stale`] if the
+/// file's mtime has changed, allowing callers to detect and handle concurrent edits.
+pub struct LoadedConfig<Config> {
+    config: Config,
+    path: PathBuf,
+    mtime: Option<SystemTime>,
+}
+
+impl<Config> LoadedConfig<Config> {
+    pub fn mtime(&self) -> Option<SystemTime> {
+        self.mtime
+    }
+
+    pub fn into_inner(self) -> Config {
+        self.config
+    }
+}
+
+impl<Config: Serialize + DeserializeOwned + Default> LoadedConfig<Config> {
+    /// Write the config back to disk, returning [`ConfigError::Stale`] if the file was modified
+    /// externally since it was loaded.
+    pub fn store_checked(&self) -> Result<(), ConfigError> {
+        fs::store_config_checked(&self.path, &self.config, self.mtime)
+    }
+}
+
+impl<Config> std::ops::Deref for LoadedConfig<Config> {
+    type Target = Config;
+    fn deref(&self) -> &Config {
+        &self.config
+    }
+}
+
+impl<Config> std::ops::DerefMut for LoadedConfig<Config> {
+    fn deref_mut(&mut self) -> &mut Config {
+        &mut self.config
+    }
+}
+
+/// Like [`load`], but returns a [`LoadedConfig`] that tracks the file's mtime so that
+/// [`LoadedConfig::store_checked`] can detect external modifications before writing.
+pub fn load_tracked<Config: Serialize + DeserializeOwned + Default>(
+    module: &str,
+    env_prefix: Option<&str>,
+) -> Result<LoadedConfig<Config>, ConfigError> {
+    let path = config_path(module);
+    let config = load::<Config>(module, env_prefix)?;
+    // Capture mtime after load(), which itself writes the canonical form to disk.
+    let mtime = fs::get_mtime(&path);
+    Ok(LoadedConfig { config, path, mtime })
+}
+
 pub trait ConfigExt: Serialize + DeserializeOwned + Default + Sized {
     fn module() -> &'static str;
     fn env_prefix() -> Option<&'static str>;
@@ -121,6 +196,9 @@ pub trait ConfigExt: Serialize + DeserializeOwned + Default + Sized {
     fn load() -> Result<Self, ConfigError> {
         crate::load(Self::module(), Self::env_prefix())
     }
+    fn load_tracked() -> Result<LoadedConfig<Self>, ConfigError> {
+        crate::load_tracked(Self::module(), Self::env_prefix())
+    }
 }
 
 #[cfg(test)]
@@ -129,7 +207,7 @@ mod tests {
     use libproduct::product_name;
     use serde::{Deserialize, Serialize};
 
-    use crate::{load, store};
+    use crate::{ConfigError, load, load_tracked, store};
 
     product_name!("dev.thmsn.unit_tests");
 
@@ -217,6 +295,45 @@ mod tests {
 
         assert!(config.name == env_name);
         assert!(path.exists(), "Config file should have been created");
+    }
+
+    #[test]
+    fn test_stale_detection() {
+        let module = "test_stale_detection";
+        let _ = PRODUCT_NAME.set_global();
+        let path = config_path(module);
+        if path.exists() {
+            std::fs::remove_file(&path).expect("Failed to remove existing config");
+        }
+
+        let loaded = load_tracked::<TestConfig>(module, None).unwrap();
+
+        // Simulate an external edit. Sleep briefly so the mtime advances on
+        // filesystems with sub-second resolution.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&path, "name = \"externally modified\"\n")
+            .expect("Failed to simulate external edit");
+
+        let result = loaded.store_checked();
+        assert!(
+            matches!(result, Err(ConfigError::Stale)),
+            "expected Stale error, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_store_checked_succeeds_when_unmodified() {
+        let module = "test_store_checked_unmodified";
+        let _ = PRODUCT_NAME.set_global();
+        let path = config_path(module);
+        if path.exists() {
+            std::fs::remove_file(&path).expect("Failed to remove existing config");
+        }
+
+        let loaded = load_tracked::<TestConfig>(module, None).unwrap();
+        let result = loaded.store_checked();
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+        assert!(path.exists());
     }
 
     #[test]

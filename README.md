@@ -8,8 +8,9 @@ A Rust library for loading, storing, and managing application configuration back
 - Merges values in priority order: type defaults → TOML file → environment variables
 - Writes atomically (temp file + `rename(2)`) to avoid partial writes
 - Recovers from corrupt config files by falling back to defaults
+- Detects external edits via mtime tracking (`load_tracked` / `store_checked`)
 - `config!` macro for ergonomic lazy-loaded static configs
-- `ConfigExt` trait for `load()` / `store()` methods on your config type
+- `ConfigExt` trait for `load()` / `store()` / `load_tracked()` methods on your config type
 
 ## Usage
 
@@ -78,6 +79,35 @@ let mut config = AppConfig::load()?;
 config.port = 9000;
 config.store()?;
 ```
+
+### Detecting external edits with `load_tracked`
+
+Use `load_tracked` (or `ConfigExt::load_tracked`) when you hold a config in memory and need to
+guard against concurrent edits to the file before writing it back. The returned `LoadedConfig<T>`
+records the file's mtime at load time; `store_checked` compares that mtime before writing and
+returns `ConfigError::Stale` if the file was modified in the meantime.
+
+```rust
+use libconfig::{ConfigExt, ConfigError};
+
+// Load and record the file's mtime
+let mut loaded = AppConfig::load_tracked()?;
+
+// ... time passes, user may have edited the file on disk ...
+
+loaded.port = 9000;
+
+match loaded.store_checked() {
+    Ok(()) => { /* written successfully */ }
+    Err(ConfigError::Stale) => {
+        // File was modified externally — reload before applying changes
+        eprintln!("Config was edited externally, reloading");
+    }
+    Err(e) => return Err(e),
+}
+```
+
+`LoadedConfig<T>` derefs to `T`, so you can read fields directly without unwrapping.
 
 ## Configuration precedence
 
